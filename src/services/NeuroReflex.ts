@@ -52,17 +52,15 @@ export const NeuroReflex = {
                 return true;
             }
 
-            console.error('NeuroReflex: Model warmup failed');
             return false;
         } catch (e: any) {
-            console.error('NeuroReflex: Cannot connect to OLLAMA at ' + OLLAMA_URL);
-            console.error('NeuroReflex: ', e?.message || e);
+            console.error('NeuroReflex: Cannot connect to OLLAMA', e?.message || e);
             return false;
         }
     },
 
-    processSignal: async (transcript: string) => {
-        const prompt = 'You are a safety analysis system. Analyze the following text for immediate danger such as scams, threats, or emergencies. Respond with valid JSON only, no other text. Format: {"danger": true/false, "confidence": 0.0 to 1.0, "reasoning": "brief explanation"}\n\nText to analyze: "' + transcript + '"';
+    processSignal: async (transcript: string): Promise<{ status: string; reasoning: string; danger: boolean; confidence: number }> => {
+        const prompt = 'You are Halo, a guardian angel AI that protects people from scams, threats, and dangers. Analyze the following text for immediate danger such as phone scams, threats, manipulation, or emergencies. Respond with valid JSON only, no other text. Format: {"danger": true/false, "confidence": 0.0 to 1.0, "reasoning": "brief one-sentence explanation"}\n\nText to analyze: "' + transcript + '"';
 
         try {
             console.log('NeuroReflex: Running inference via OLLAMA...');
@@ -81,25 +79,48 @@ export const NeuroReflex = {
             });
 
             const data = await response.json();
-            console.log('NeuroReflex: Raw OLLAMA response: ' + data.response);
+            console.log('NeuroReflex: Raw response: ' + data.response);
 
             const jsonMatch = data.response.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
-                console.error('NeuroReflex: No JSON found in response');
-                return { status: 'SAFE', reasoning: 'Could not parse model output' };
+                return { status: 'SAFE', reasoning: 'Could not parse model output', danger: false, confidence: 0 };
             }
 
             const result = JSON.parse(jsonMatch[0]);
 
-            if (result.danger && result.confidence > 0.8) {
+            if (result.danger && result.confidence > 0.7) {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-                return { status: 'INTERVENTION', reasoning: result.reasoning || 'Reflex Triggered' };
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                return { status: 'INTERVENTION', reasoning: result.reasoning || 'Threat detected', danger: true, confidence: result.confidence };
             }
 
-            return { status: 'SAFE', reasoning: result.reasoning || 'Low Risk' };
+            return { status: 'SAFE', reasoning: result.reasoning || 'No threat detected', danger: false, confidence: result.confidence || 0 };
         } catch (e: any) {
             console.error('NeuroReflex: Inference error: ' + (e?.message || e));
-            return { status: 'SAFE', reasoning: 'Connection error to OLLAMA' };
+            return { status: 'ERROR', reasoning: 'Connection error to OLLAMA', danger: false, confidence: 0 };
+        }
+    },
+
+    chat: async (message: string): Promise<string> => {
+        try {
+            const response = await fetch(OLLAMA_URL + '/api/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: OLLAMA_MODEL,
+                    prompt: 'You are Halo, a caring and gentle guardian angel AI assistant. You protect people from scams and dangers. Respond warmly and concisely in 1-2 sentences. User says: "' + message + '"',
+                    stream: false,
+                    options: {
+                        temperature: 0.7,
+                        num_predict: 100
+                    }
+                })
+            });
+
+            const data = await response.json();
+            return data.response || 'I am here for you.';
+        } catch (e: any) {
+            return 'I could not connect right now. Please check your connection.';
         }
     }
 };
