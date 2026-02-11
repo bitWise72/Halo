@@ -1,5 +1,7 @@
 # Halo - Your Invisible Guardian Angel
 
+![Halo Demo](halo-demo.png)
+
 Halo is a privacy focused mobile application designed to protect users from verbal threats, scams, and social engineering attacks in real time. It operates as a background service with a non intrusive overlay, continuously analyzing conversation patterns to detect danger without compromising user privacy.
 
 ## How It Protects You
