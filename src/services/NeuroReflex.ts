@@ -3,124 +3,140 @@ import { LlamaCPP } from '@runanywhere/llamacpp';
 import * as Haptics from 'expo-haptics';
 
 const OLLAMA_URL = 'http://localhost:11434';
-const OLLAMA_MODEL = 'llama3';
+
+export interface AnalysisResult {
+    danger: boolean;
+    confidence: number;
+    reasoning: string;
+}
+
+let activeModel = '';
 
 export const NeuroReflex = {
-    initialize: async () => {
+    initialize: async (): Promise<boolean> => {
         try {
             LlamaCPP.register();
             await RunAnywhere.initialize({
                 environment: SDKEnvironment.Development
             });
-            console.log('NeuroReflex: RunAnywhere SDK initialized');
+            console.log('NeuroReflex: SDK initialized');
         } catch (e) {
-            console.log('NeuroReflex: RunAnywhere SDK init partial, continuing with OLLAMA backend');
+            console.log('NeuroReflex: SDK partial init, using OLLAMA backend');
         }
         return true;
     },
 
-    loadReflexModel: async () => {
+    loadModel: async (): Promise<boolean> => {
         try {
-            console.log('NeuroReflex: Checking OLLAMA connection at ' + OLLAMA_URL);
+            console.log('NeuroReflex: Checking OLLAMA...');
+            const res = await fetch(OLLAMA_URL + '/api/tags');
+            const data = await res.json();
+            const models = (data.models || []).map((m: any) => m.name);
+            console.log('NeuroReflex: Available models: ' + JSON.stringify(models));
 
-            const tagsResponse = await fetch(OLLAMA_URL + '/api/tags');
-            const tagsData = await tagsResponse.json();
-            const models = tagsData.models || [];
-            const modelNames = models.map((m: any) => m.name);
-            console.log('NeuroReflex: Available OLLAMA models: ' + JSON.stringify(modelNames));
+            const preferred = ['tinyllama:latest', 'phi3:mini', 'llama3:latest'];
+            for (const name of preferred) {
+                if (models.includes(name)) {
+                    console.log('NeuroReflex: Trying to load ' + name);
+                    try {
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 30000);
+                        const warmup = await fetch(OLLAMA_URL + '/api/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                model: name,
+                                prompt: 'hi',
+                                stream: false,
+                                options: { num_predict: 1 }
+                            }),
+                            signal: controller.signal
+                        });
+                        clearTimeout(timeout);
 
-            const hasModel = modelNames.some((name: string) => name.startsWith(OLLAMA_MODEL));
-            if (!hasModel) {
-                console.error('NeuroReflex: Model ' + OLLAMA_MODEL + ' not found in OLLAMA');
-                return false;
+                        if (warmup.ok) {
+                            activeModel = name;
+                            console.log('NeuroReflex: Model ready: ' + name);
+                            return true;
+                        }
+
+                        const err = await warmup.text();
+                        console.log('NeuroReflex: ' + name + ' failed: ' + err);
+                    } catch (e: any) {
+                        console.log('NeuroReflex: ' + name + ' error: ' + e?.message);
+                    }
+                }
             }
 
-            console.log('NeuroReflex: Warming up model...');
-            const warmup = await fetch(OLLAMA_URL + '/api/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: OLLAMA_MODEL,
-                    prompt: 'Hello',
-                    stream: false,
-                    options: { num_predict: 1 }
-                })
-            });
-
-            if (warmup.ok) {
-                console.log('NeuroReflex: Model warmed up and ready');
-                return true;
-            }
-
+            console.error('NeuroReflex: No model could be loaded');
             return false;
         } catch (e: any) {
-            console.error('NeuroReflex: Cannot connect to OLLAMA', e?.message || e);
+            console.error('NeuroReflex: OLLAMA connect failed:', e?.message);
             return false;
         }
     },
 
-    processSignal: async (transcript: string): Promise<{ status: string; reasoning: string; danger: boolean; confidence: number }> => {
-        const prompt = 'You are Halo, a guardian angel AI that protects people from scams, threats, and dangers. Analyze the following text for immediate danger such as phone scams, threats, manipulation, or emergencies. Respond with valid JSON only, no other text. Format: {"danger": true/false, "confidence": 0.0 to 1.0, "reasoning": "brief one-sentence explanation"}\n\nText to analyze: "' + transcript + '"';
+    getActiveModel: (): string => activeModel,
+
+    analyze: async (text: string): Promise<AnalysisResult> => {
+        if (!activeModel) {
+            return { danger: false, confidence: 0, reasoning: 'No model loaded' };
+        }
+
+        const prompt = 'Analyze this text for scams, threats, or danger. Reply ONLY with JSON: {"danger": true/false, "confidence": 0.0-1.0, "reasoning": "one sentence"}\n\nText: "' + text + '"';
 
         try {
-            console.log('NeuroReflex: Running inference via OLLAMA...');
-            const response = await fetch(OLLAMA_URL + '/api/generate', {
+            console.log('NeuroReflex: Analyzing with ' + activeModel + '...');
+
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 60000);
+
+            const res = await fetch(OLLAMA_URL + '/api/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: OLLAMA_MODEL,
+                    model: activeModel,
                     prompt: prompt,
                     stream: false,
-                    options: {
-                        temperature: 0.1,
-                        num_predict: 150
-                    }
-                })
+                    options: { temperature: 0.1, num_predict: 100 }
+                }),
+                signal: controller.signal
             });
+            clearTimeout(timeout);
 
-            const data = await response.json();
-            console.log('NeuroReflex: Raw response: ' + data.response);
-
-            const jsonMatch = data.response.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                return { status: 'SAFE', reasoning: 'Could not parse model output', danger: false, confidence: 0 };
+            if (!res.ok) {
+                const errText = await res.text();
+                console.error('NeuroReflex: OLLAMA error:', errText);
+                return { danger: false, confidence: 0, reasoning: 'Model error' };
             }
 
-            const result = JSON.parse(jsonMatch[0]);
+            const data = await res.json();
+            console.log('NeuroReflex: Raw response:', data.response);
 
-            if (result.danger && result.confidence > 0.7) {
+            const match = data.response.match(/\{[\s\S]*?\}/);
+            if (!match) {
+                return { danger: false, confidence: 0, reasoning: 'Could not parse response' };
+            }
+
+            const result = JSON.parse(match[0]);
+
+            if (result.danger && result.confidence > 0.6) {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                return { status: 'INTERVENTION', reasoning: result.reasoning || 'Threat detected', danger: true, confidence: result.confidence };
             }
 
-            return { status: 'SAFE', reasoning: result.reasoning || 'No threat detected', danger: false, confidence: result.confidence || 0 };
+            return {
+                danger: !!result.danger,
+                confidence: result.confidence || 0,
+                reasoning: result.reasoning || 'Analysis complete'
+            };
         } catch (e: any) {
-            console.error('NeuroReflex: Inference error: ' + (e?.message || e));
-            return { status: 'ERROR', reasoning: 'Connection error to OLLAMA', danger: false, confidence: 0 };
-        }
-    },
-
-    chat: async (message: string): Promise<string> => {
-        try {
-            const response = await fetch(OLLAMA_URL + '/api/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: OLLAMA_MODEL,
-                    prompt: 'You are Halo, a caring and gentle guardian angel AI assistant. You protect people from scams and dangers. Respond warmly and concisely in 1-2 sentences. User says: "' + message + '"',
-                    stream: false,
-                    options: {
-                        temperature: 0.7,
-                        num_predict: 100
-                    }
-                })
-            });
-
-            const data = await response.json();
-            return data.response || 'I am here for you.';
-        } catch (e: any) {
-            return 'I could not connect right now. Please check your connection.';
+            if (e?.name === 'AbortError') {
+                console.error('NeuroReflex: Request timed out');
+                return { danger: false, confidence: 0, reasoning: 'Analysis timed out' };
+            }
+            console.error('NeuroReflex: Error:', e?.message);
+            return { danger: false, confidence: 0, reasoning: 'Connection error' };
         }
     }
 };

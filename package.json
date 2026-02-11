@@ -9,7 +9,6 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@react-native-voice/voice": "^3.2.4",
     "@runanywhere/core": "^0.17.8",
     "@runanywhere/llamacpp": "^0.17.7",
     "expo": "~54.0.33",
@@ -20,11 +19,11 @@
     "expo-linear-gradient": "~15.0.8",
     "expo-sensors": "~15.0.8",
     "expo-speech": "~14.0.8",
+    "expo-speech-recognition": "^3.1.0",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-fs": "^2.20.0",
-    "react-native-linear-gradient": "^2.8.3",
     "react-native-reanimated": "~4.1.1",
     "react-native-zip-archive": "^7.0.2"
   },

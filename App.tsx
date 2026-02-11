@@ -4,530 +4,371 @@ import {
   Text,
   View,
   TouchableOpacity,
-  ActivityIndicator,
-  TextInput,
-  ScrollView,
   Animated,
   Dimensions,
   StatusBar,
   Platform,
-  PermissionsAndroid,
+  ScrollView,
+  NativeModules,
+  AppState,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as Haptics from 'expo-haptics';
-import { NeuroReflex } from './src/services/NeuroReflex';
-import { VoiceService } from './src/services/VoiceService';
+import { Ionicons } from '@expo/vector-icons';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
+import { NeuroReflex, AnalysisResult } from './src/services/NeuroReflex';
+import { VoiceOutput } from './src/services/VoiceService';
 import { COLORS } from './src/theme/colors';
 
+const { HaloOverlay } = NativeModules;
 const { width } = Dimensions.get('window');
+const HALO_SIZE = width * 0.48;
 
-interface Message {
+interface AlertEntry {
   id: string;
-  text: string;
-  sender: 'user' | 'halo';
-  type: 'normal' | 'danger' | 'safe';
-  timestamp: Date;
+  result: AnalysisResult;
+  transcript: string;
+  time: Date;
 }
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const [active, setActive] = useState(false);
   const [statusText, setStatusText] = useState('Awakening...');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isDanger, setIsDanger] = useState(false);
-  const [partialText, setPartialText] = useState('');
+  const [modelName, setModelName] = useState('');
+  const [alerts, setAlerts] = useState<AlertEntry[]>([]);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+  const [overlayPermission, setOverlayPermission] = useState(false);
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim = useRef(new Animated.Value(0.3)).current;
-  const dangerAnim = useRef(new Animated.Value(0)).current;
-  const scrollRef = useRef<ScrollView>(null);
+  const haloScale = useRef(new Animated.Value(1)).current;
+  const haloOpacity = useRef(new Animated.Value(0.3)).current;
+  const outerRingScale = useRef(new Animated.Value(1)).current;
+  const dangerFlash = useRef(new Animated.Value(0)).current;
+  const pulseRef = useRef<Animated.CompositeAnimation | null>(null);
+  const activeRef = useRef(false);
 
   useEffect(() => {
-    startPulseAnimation();
-    startGlowAnimation();
-    requestPermissions();
-    init();
+    bootSequence();
+    checkOverlayPermission();
 
-    return () => {
-      VoiceService.cleanup();
-    };
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') checkOverlayPermission();
+    });
+    return () => sub.remove();
   }, []);
 
-  const requestPermissions = async () => {
-    if (Platform.OS === 'android') {
-      try {
-        await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
-      } catch (e) {
-        console.log('Permission request failed');
-      }
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
+
+  const checkOverlayPermission = async () => {
+    try {
+      const can = await HaloOverlay.canDrawOverlays();
+      setOverlayPermission(can);
+    } catch (e) {
+      console.log('Overlay check failed:', e);
     }
   };
 
-  const startPulseAnimation = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.15, duration: 2000, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
-      ])
-    ).start();
+  const requestOverlay = () => {
+    try {
+      HaloOverlay.requestOverlayPermission();
+    } catch (e) {
+      console.log('Overlay request failed:', e);
+    }
   };
 
-  const startGlowAnimation = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowAnim, { toValue: 0.8, duration: 3000, useNativeDriver: true }),
-        Animated.timing(glowAnim, { toValue: 0.3, duration: 3000, useNativeDriver: true }),
-      ])
-    ).start();
+  const toggleOverlay = () => {
+    if (!overlayPermission) {
+      requestOverlay();
+      return;
+    }
+    if (overlayEnabled) {
+      HaloOverlay.hideOverlay();
+      setOverlayEnabled(false);
+    } else {
+      HaloOverlay.showOverlay(false);
+      setOverlayEnabled(true);
+    }
   };
 
-  const triggerDangerAnimation = () => {
-    setIsDanger(true);
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results[0]?.transcript || '';
+    if (event.isFinal && transcript.length > 5) {
+      setLiveTranscript('');
+      runAnalysis(transcript);
+    } else {
+      setLiveTranscript(transcript);
+    }
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    if (activeRef.current) {
+      setTimeout(() => startListening(), 800);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    console.log('Speech error:', event.error, event.message);
+    if (activeRef.current) {
+      setTimeout(() => startListening(), 2000);
+    }
+  });
+
+  const bootSequence = async () => {
+    setStatusText('Initializing...');
+    await NeuroReflex.initialize();
+    setStatusText('Connecting to OLLAMA...');
+    const loaded = await NeuroReflex.loadModel();
+    if (loaded) {
+      setModelName(NeuroReflex.getActiveModel());
+      setReady(true);
+      setStatusText('Ready to protect');
+      startIdlePulse();
+    } else {
+      setStatusText('No model available');
+    }
+  };
+
+  const startIdlePulse = () => {
+    if (pulseRef.current) pulseRef.current.stop();
+    pulseRef.current = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(haloScale, { toValue: 1.06, duration: 2800, useNativeDriver: true }),
+          Animated.timing(haloOpacity, { toValue: 0.55, duration: 2800, useNativeDriver: true }),
+        ]),
+        Animated.parallel([
+          Animated.timing(haloScale, { toValue: 1, duration: 2800, useNativeDriver: true }),
+          Animated.timing(haloOpacity, { toValue: 0.3, duration: 2800, useNativeDriver: true }),
+        ]),
+      ])
+    );
+    pulseRef.current.start();
+  };
+
+  const startActivePulse = () => {
+    if (pulseRef.current) pulseRef.current.stop();
+    pulseRef.current = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(haloScale, { toValue: 1.18, duration: 1000, useNativeDriver: true }),
+          Animated.timing(haloOpacity, { toValue: 1, duration: 1000, useNativeDriver: true }),
+          Animated.timing(outerRingScale, { toValue: 1.35, duration: 1000, useNativeDriver: true }),
+        ]),
+        Animated.parallel([
+          Animated.timing(haloScale, { toValue: 1.04, duration: 1000, useNativeDriver: true }),
+          Animated.timing(haloOpacity, { toValue: 0.5, duration: 1000, useNativeDriver: true }),
+          Animated.timing(outerRingScale, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        ]),
+      ])
+    );
+    pulseRef.current.start();
+  };
+
+  const flashDanger = () => {
     Animated.sequence([
-      Animated.timing(dangerAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
-      Animated.timing(dangerAnim, { toValue: 0.6, duration: 200, useNativeDriver: true }),
-      Animated.timing(dangerAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(dangerFlash, { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.timing(dangerFlash, { toValue: 0, duration: 150, useNativeDriver: true }),
+      Animated.timing(dangerFlash, { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.timing(dangerFlash, { toValue: 0, duration: 600, useNativeDriver: true }),
     ]).start();
   };
 
-  const init = async () => {
-    setStatusText('Connecting to the divine...');
-    const sdkInit = await NeuroReflex.initialize();
-    if (sdkInit) {
-      setStatusText('Reaching out to Llama...');
-      const modelLoaded = await NeuroReflex.loadReflexModel();
-      if (modelLoaded) {
-        setReady(true);
-        setStatusText('Guardian Active');
-        addMessage('I am Halo, your invisible guardian angel. Speak or type anything you want me to analyze for threats.', 'halo', 'normal');
-      } else {
-        setStatusText('Cannot connect to OLLAMA');
-        addMessage('I could not connect to the local AI. Please ensure OLLAMA is running and adb reverse is active.', 'halo', 'danger');
+  const startListening = async () => {
+    try {
+      const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!granted) {
+        setStatusText('Microphone permission required');
+        return;
       }
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-US',
+        interimResults: true,
+        continuous: true,
+      });
+    } catch (e: any) {
+      console.log('Listen start error:', e?.message);
+      if (activeRef.current) setTimeout(() => startListening(), 3000);
     }
-
-    VoiceService.setup(
-      (text: string) => {
-        setPartialText('');
-        setInputText(text);
-        setIsListening(false);
-      },
-      (text: string) => {
-        setPartialText(text);
-      },
-      (error: string) => {
-        console.log('Voice error: ' + error);
-        setIsListening(false);
-        setPartialText('');
-      }
-    );
   };
 
-  const addMessage = (text: string, sender: 'user' | 'halo', type: 'normal' | 'danger' | 'safe') => {
-    const msg: Message = {
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-      text,
-      sender,
-      type,
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, msg]);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+  const stopListening = () => {
+    try { ExpoSpeechRecognitionModule.stop(); } catch (e) { }
   };
 
-  const handleSend = async () => {
-    const text = inputText.trim();
-    if (!ready || !text || loading) return;
+  const toggleGuardian = async () => {
+    if (!ready) return;
+    if (active) {
+      setActive(false);
+      stopListening();
+      setLiveTranscript('');
+      setStatusText('Guardian resting');
+      startIdlePulse();
+    } else {
+      setActive(true);
+      setStatusText('Listening...');
+      startActivePulse();
+      await startListening();
+    }
+  };
 
-    addMessage(text, 'user', 'normal');
-    setInputText('');
-    setLoading(true);
+  const runAnalysis = async (transcript: string) => {
+    setAnalyzing(true);
     setStatusText('Analyzing...');
-
-    const result = await NeuroReflex.processSignal(text);
+    const result = await NeuroReflex.analyze(transcript);
 
     if (result.danger) {
-      triggerDangerAnimation();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      const alertMsg = 'ALERT: ' + result.reasoning + ' (Confidence: ' + Math.round(result.confidence * 100) + '%)';
-      addMessage(alertMsg, 'halo', 'danger');
-      setStatusText('Threat Detected');
-      VoiceService.speak('Warning. ' + result.reasoning, true);
+      flashDanger();
+      VoiceOutput.speak('Warning. ' + result.reasoning, true);
+      setStatusText('Threat detected');
+      if (overlayEnabled) {
+        try { HaloOverlay.updateDangerState(true); } catch (e) { }
+        setTimeout(() => {
+          try { HaloOverlay.updateDangerState(false); } catch (e) { }
+        }, 5000);
+      }
     } else {
-      setIsDanger(false);
-      dangerAnim.setValue(0);
-      addMessage(result.reasoning, 'halo', 'safe');
-      setStatusText('Guardian Active');
+      if (activeRef.current) setStatusText('Listening...');
     }
-    setLoading(false);
+
+    setAlerts(prev => [{ id: Date.now().toString(), result, transcript, time: new Date() }, ...prev].slice(0, 10));
+    setAnalyzing(false);
   };
 
-  const handleVoiceToggle = async () => {
-    if (isListening) {
-      await VoiceService.stopListening();
-      setIsListening(false);
-      setPartialText('');
-    } else {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      setIsListening(true);
-      setPartialText('');
-      await VoiceService.startListening();
-    }
+  const clearAlerts = () => {
+    setAlerts([]);
+    if (active) setStatusText('Listening...');
+    else setStatusText('Guardian resting');
   };
 
-  const handleChat = async () => {
-    const text = inputText.trim();
-    if (!ready || !text || loading) return;
-
-    addMessage(text, 'user', 'normal');
-    setInputText('');
-    setLoading(true);
-
-    const response = await NeuroReflex.chat(text);
-    addMessage(response, 'halo', 'normal');
-    setLoading(false);
-  };
-
-  const renderMessage = (msg: Message) => {
-    const isUser = msg.sender === 'user';
-    const bgColor = msg.type === 'danger' ? COLORS.danger
-      : msg.type === 'safe' ? COLORS.safe
-        : isUser ? COLORS.primary : COLORS.cardBg;
-    const textColor = (msg.type === 'danger' || msg.type === 'safe' || isUser) ? COLORS.white : COLORS.text;
-
-    return (
-      <View key={msg.id} style={[styles.messageBubble, isUser ? styles.userBubble : styles.haloBubble]}>
-        {!isUser && (
-          <View style={styles.haloAvatar}>
-            <Text style={styles.haloAvatarText}>H</Text>
-          </View>
-        )}
-        <View style={[styles.messageContent, { backgroundColor: bgColor }]}>
-          <Text style={[styles.messageText, { color: textColor }]}>{msg.text}</Text>
-        </View>
-      </View>
-    );
-  };
-
-  const dangerOverlayOpacity = dangerAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 0.15],
-  });
+  const dangerBgOpacity = dangerFlash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.35] });
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+      <Animated.View style={[styles.dangerOverlay, { opacity: dangerBgOpacity }]} pointerEvents="none" />
 
-      <Animated.View
-        style={[styles.dangerOverlay, { opacity: dangerOverlayOpacity }]}
-        pointerEvents="none"
-      />
+      <LinearGradient colors={[COLORS.bg, COLORS.bgLight, COLORS.bg]} style={styles.gradient} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}>
 
-      <LinearGradient colors={[COLORS.gradientStart, COLORS.gradientEnd, COLORS.background]} style={styles.gradient}>
-        <View style={styles.header}>
-          <View style={styles.headerRow}>
-            <Animated.View style={[styles.haloRingOuter, { transform: [{ scale: pulseAnim }] }]}>
-              <Animated.View style={[styles.haloRingGlow, { opacity: glowAnim }]} />
-              <View style={styles.haloRingInner}>
-                <Text style={styles.haloIcon}>H</Text>
-              </View>
-            </Animated.View>
-            <View style={styles.headerText}>
-              <Text style={styles.title}>Halo</Text>
-              <Text style={styles.subtitle}>Your Invisible Guardian Angel</Text>
-            </View>
-          </View>
-          <View style={[styles.statusBadge, ready ? styles.statusActive : styles.statusInactive]}>
-            <View style={[styles.statusDot, ready ? styles.dotActive : styles.dotInactive]} />
-            <Text style={[styles.statusLabel, ready ? styles.statusLabelActive : styles.statusLabelInactive]}>{statusText}</Text>
-          </View>
+        <View style={styles.topBar}>
+          <Text style={styles.appName}>HALO</Text>
+          <Text style={styles.tagline}>Your Invisible Guardian Angel</Text>
         </View>
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.chatArea}
-          contentContainerStyle={styles.chatContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {messages.map(renderMessage)}
-          {loading && (
-            <View style={[styles.messageBubble, styles.haloBubble]}>
-              <View style={styles.haloAvatar}>
-                <Text style={styles.haloAvatarText}>H</Text>
-              </View>
-              <View style={[styles.messageContent, { backgroundColor: COLORS.cardBg }]}>
-                <ActivityIndicator size="small" color={COLORS.primary} />
-              </View>
+        <View style={styles.centerArea}>
+          <View style={styles.haloContainer}>
+            <Animated.View style={[styles.outerRing, { transform: [{ scale: outerRingScale }], opacity: haloOpacity }]} />
+            <Animated.View style={[styles.haloGlow, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
+            <TouchableOpacity style={[styles.haloCore, active && styles.haloCoreActive]} onPress={toggleGuardian} activeOpacity={0.8} disabled={!ready}>
+              <Ionicons name={active ? 'shield-checkmark' : 'shield-outline'} size={52} color={active ? COLORS.gold : COLORS.primaryLight} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={[styles.statusText, active && styles.statusTextActive]}>{statusText}</Text>
+          {modelName.length > 0 && <Text style={styles.modelLabel}>{modelName}</Text>}
+
+          {liveTranscript.length > 0 && (
+            <View style={styles.transcriptBubble}>
+              <Ionicons name="ear-outline" size={14} color={COLORS.primaryLight} />
+              <Text style={styles.transcriptText} numberOfLines={2}>{liveTranscript}</Text>
             </View>
           )}
-        </ScrollView>
+          {analyzing && (
+            <View style={styles.analyzingPill}>
+              <Ionicons name="pulse-outline" size={14} color={COLORS.gold} />
+              <Text style={styles.analyzingText}>Processing...</Text>
+            </View>
+          )}
 
-        {isListening && (
-          <View style={styles.listeningBar}>
-            <View style={styles.listeningPulse} />
-            <Text style={styles.listeningText}>{partialText || 'Listening...'}</Text>
-          </View>
-        )}
+          <Text style={styles.toggleHint}>
+            {ready ? (active ? 'Tap shield to deactivate' : 'Tap shield to start listening') : 'Connecting...'}
+          </Text>
 
-        <View style={styles.inputArea}>
-          <TextInput
-            style={styles.textInput}
-            placeholder="Type or speak to Halo..."
-            placeholderTextColor={COLORS.textLight}
-            value={inputText}
-            onChangeText={setInputText}
-            multiline
-            editable={!loading}
-          />
-
-          <TouchableOpacity
-            style={[styles.voiceBtn, isListening && styles.voiceBtnActive]}
-            onPress={handleVoiceToggle}
-          >
-            <Text style={styles.voiceBtnIcon}>{isListening ? '||' : 'M'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.sendBtn, (!ready || !inputText.trim() || loading) && styles.sendBtnDisabled]}
-            onPress={handleSend}
-            disabled={!ready || !inputText.trim() || loading}
-          >
-            <Text style={styles.sendBtnIcon}>A</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.chatBtn, (!ready || !inputText.trim() || loading) && styles.sendBtnDisabled]}
-            onPress={handleChat}
-            disabled={!ready || !inputText.trim() || loading}
-          >
-            <Text style={styles.chatBtnIcon}>C</Text>
+          <TouchableOpacity style={[styles.overlayBtn, overlayEnabled && styles.overlayBtnActive]} onPress={toggleOverlay}>
+            <Ionicons name={overlayEnabled ? 'layers' : 'layers-outline'} size={18} color={overlayEnabled ? COLORS.gold : COLORS.textDim} />
+            <Text style={[styles.overlayBtnText, overlayEnabled && styles.overlayBtnTextActive]}>
+              {!overlayPermission ? 'Enable Overlay' : (overlayEnabled ? 'Overlay Active' : 'Show Overlay')}
+            </Text>
           </TouchableOpacity>
         </View>
+
+        <ScrollView style={styles.alertsScroll} contentContainerStyle={styles.alertsContent}>
+          {alerts.length > 0 && (
+            <View style={styles.alertsHeader}>
+              <Text style={styles.alertsTitle}>Recent Scans</Text>
+              <TouchableOpacity onPress={clearAlerts} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="trash-outline" size={16} color={COLORS.textDim} />
+              </TouchableOpacity>
+            </View>
+          )}
+          {alerts.map((alert) => (
+            <View key={alert.id} style={[styles.alertCard, alert.result.danger ? styles.alertDanger : styles.alertSafe]}>
+              <View style={styles.alertIconRow}>
+                <Ionicons name={alert.result.danger ? 'warning' : 'checkmark-circle'} size={18} color={alert.result.danger ? COLORS.danger : COLORS.safe} />
+                <Text style={[styles.alertLabel, { color: alert.result.danger ? COLORS.danger : COLORS.safe }]}>
+                  {alert.result.danger ? 'THREAT' : 'SAFE'}
+                </Text>
+                <Text style={styles.alertConfidence}>{Math.round(alert.result.confidence * 100)}%</Text>
+              </View>
+              <Text style={styles.alertReasoning}>{alert.result.reasoning}</Text>
+              <Text style={styles.alertTranscript} numberOfLines={1}>{alert.transcript}</Text>
+            </View>
+          ))}
+        </ScrollView>
+
+        <Text style={styles.footer}>Local AI via OLLAMA</Text>
       </LinearGradient>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, backgroundColor: COLORS.bg },
   gradient: { flex: 1 },
-  dangerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: COLORS.danger,
-    zIndex: 10,
-  },
+  dangerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: COLORS.danger, zIndex: 100 },
 
-  header: {
-    paddingTop: 50,
-    paddingHorizontal: 24,
-    paddingBottom: 16,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  haloRingOuter: {
-    width: 56,
-    height: 56,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  haloRingGlow: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 28,
-    backgroundColor: COLORS.haloGlow,
-  },
-  haloRingInner: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: COLORS.goldLight,
-  },
-  haloIcon: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: COLORS.white,
-  },
-  headerText: {
-    marginLeft: 14,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: COLORS.text,
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: COLORS.textSecondary,
-    letterSpacing: 0.5,
-    marginTop: 2,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    alignSelf: 'flex-start',
-  },
-  statusActive: { backgroundColor: 'rgba(76, 175, 125, 0.12)' },
-  statusInactive: { backgroundColor: 'rgba(232, 84, 84, 0.12)' },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  dotActive: { backgroundColor: COLORS.safe },
-  dotInactive: { backgroundColor: COLORS.danger },
-  statusLabel: { fontSize: 13, fontWeight: '600' },
-  statusLabelActive: { color: COLORS.safe },
-  statusLabelInactive: { color: COLORS.danger },
+  topBar: { alignItems: 'center', paddingTop: Platform.OS === 'android' ? 50 : 58, paddingBottom: 0 },
+  appName: { fontSize: 34, fontWeight: '200', color: COLORS.text, letterSpacing: 12 },
+  tagline: { fontSize: 10, color: COLORS.textDim, letterSpacing: 3, marginTop: 2, textTransform: 'uppercase' },
 
-  chatArea: { flex: 1 },
-  chatContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
+  centerArea: { alignItems: 'center', justifyContent: 'center', paddingVertical: 16 },
+  haloContainer: { width: HALO_SIZE + 50, height: HALO_SIZE + 50, alignItems: 'center', justifyContent: 'center' },
+  outerRing: { position: 'absolute', width: HALO_SIZE + 40, height: HALO_SIZE + 40, borderRadius: (HALO_SIZE + 40) / 2, borderWidth: 1, borderColor: COLORS.primaryGlow },
+  haloGlow: { position: 'absolute', width: HALO_SIZE + 14, height: HALO_SIZE + 14, borderRadius: (HALO_SIZE + 14) / 2, backgroundColor: COLORS.primaryGlow },
+  haloCore: { width: HALO_SIZE, height: HALO_SIZE, borderRadius: HALO_SIZE / 2, backgroundColor: COLORS.bgLight, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: COLORS.primaryMuted },
+  haloCoreActive: { borderColor: COLORS.gold, backgroundColor: 'rgba(212, 168, 76, 0.04)' },
 
-  messageBubble: {
-    flexDirection: 'row',
-    marginBottom: 12,
-    alignItems: 'flex-end',
-  },
-  userBubble: {
-    justifyContent: 'flex-end',
-  },
-  haloBubble: {
-    justifyContent: 'flex-start',
-  },
-  haloAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-    borderWidth: 1.5,
-    borderColor: COLORS.goldLight,
-  },
-  haloAvatarText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: COLORS.white,
-  },
-  messageContent: {
-    maxWidth: width * 0.72,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 18,
-    shadowColor: COLORS.shadow,
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  messageText: {
-    fontSize: 15,
-    lineHeight: 22,
-  },
+  statusText: { fontSize: 15, color: COLORS.textDim, marginTop: 14, fontWeight: '300', letterSpacing: 1 },
+  statusTextActive: { color: COLORS.text },
+  modelLabel: { fontSize: 10, color: COLORS.textMuted, marginTop: 4, letterSpacing: 1, textTransform: 'uppercase' },
 
-  listeningBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(139, 127, 212, 0.08)',
-    marginHorizontal: 16,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  listeningPulse: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: COLORS.danger,
-    marginRight: 10,
-  },
-  listeningText: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    fontStyle: 'italic',
-    flex: 1,
-  },
+  transcriptBubble: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.bgCard, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, marginTop: 12, maxWidth: width * 0.85 },
+  transcriptText: { fontSize: 12, color: COLORS.textDim, marginLeft: 8, fontStyle: 'italic', flex: 1 },
+  analyzingPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.bgCardActive, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, marginTop: 10 },
+  analyzingText: { fontSize: 11, color: COLORS.gold, marginLeft: 6, fontWeight: '500' },
+  toggleHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 12, letterSpacing: 0.5 },
 
-  inputArea: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    paddingBottom: 28,
-    backgroundColor: COLORS.white,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(139, 127, 212, 0.1)',
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: COLORS.text,
-    maxHeight: 100,
-    marginRight: 8,
-  },
-  voiceBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: COLORS.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 6,
-  },
-  voiceBtnActive: {
-    backgroundColor: COLORS.danger,
-  },
-  voiceBtnIcon: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.white,
-  },
-  sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 6,
-  },
-  sendBtnDisabled: { opacity: 0.4 },
-  sendBtnIcon: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.white,
-  },
-  chatBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: COLORS.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  chatBtnIcon: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: COLORS.white,
-  },
+  overlayBtn: { flexDirection: 'row', alignItems: 'center', marginTop: 14, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, backgroundColor: COLORS.bgCard, borderWidth: 1, borderColor: COLORS.textMuted },
+  overlayBtnActive: { borderColor: COLORS.gold, backgroundColor: 'rgba(212, 168, 76, 0.08)' },
+  overlayBtnText: { fontSize: 12, color: COLORS.textDim, marginLeft: 8, fontWeight: '500' },
+  overlayBtnTextActive: { color: COLORS.gold },
+
+  alertsScroll: { flex: 1 },
+  alertsContent: { paddingHorizontal: 20, paddingBottom: 8 },
+  alertsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  alertsTitle: { fontSize: 11, color: COLORS.textDim, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1.5 },
+  alertCard: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 8 },
+  alertDanger: { backgroundColor: COLORS.dangerBg },
+  alertSafe: { backgroundColor: COLORS.safeBg },
+  alertIconRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  alertLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1, marginLeft: 6, flex: 1 },
+  alertConfidence: { fontSize: 11, color: COLORS.textDim, fontWeight: '600' },
+  alertReasoning: { fontSize: 13, color: COLORS.text, lineHeight: 18, marginBottom: 3 },
+  alertTranscript: { fontSize: 10, color: COLORS.textMuted, fontStyle: 'italic' },
+  footer: { textAlign: 'center', fontSize: 9, color: COLORS.textMuted, paddingBottom: 22, letterSpacing: 1 },
 });

@@ -37,7 +37,8 @@
         {
           "microphonePermission": "Allow Project Halo to detect scams."
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
