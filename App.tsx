@@ -12,6 +12,7 @@ import {
   NativeModules,
   AppState,
 } from 'react-native';
+import { requireNativeModule } from 'expo-modules-core';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -22,7 +23,7 @@ import { NeuroReflex, AnalysisResult } from './src/services/NeuroReflex';
 import { VoiceOutput } from './src/services/VoiceService';
 import { COLORS } from './src/theme/colors';
 
-const { HaloOverlay } = NativeModules;
+const HaloOverlay = requireNativeModule('HaloOverlay');
 const { width } = Dimensions.get('window');
 const HALO_SIZE = width * 0.48;
 
@@ -224,13 +225,26 @@ export default function App() {
 
     if (result.danger) {
       flashDanger();
-      VoiceOutput.speak('Warning. ' + result.reasoning, true);
-      setStatusText('Threat detected');
+      setStatusText('Threat Outputting...');
+
+      // Stop listening to prevent feedback loop
+      stopListening();
+
+      // Speak the warning
+      VoiceOutput.speak('Warning. ' + result.reasoning, true, async () => {
+        // Resume listening after speech finishes
+        if (activeRef.current) {
+          setStatusText('Listening...');
+          await new Promise(r => setTimeout(r, 800)); // Small buffer
+          startListening();
+        }
+      });
+
       if (overlayEnabled) {
         try { HaloOverlay.updateDangerState(true); } catch (e) { }
         setTimeout(() => {
           try { HaloOverlay.updateDangerState(false); } catch (e) { }
-        }, 5000);
+        }, 8000); // Keep red longer
       }
     } else {
       if (activeRef.current) setStatusText('Listening...');

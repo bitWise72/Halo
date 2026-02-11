@@ -1,0 +1,11 @@
+{
+    "platforms": [
+        "android"
+    ],
+    "android": {
+        "package": "expo.modules.halooverlay",
+        "modules": [
+            "expo.modules.halooverlay.HaloOverlayModule"
+        ]
+    }
+}

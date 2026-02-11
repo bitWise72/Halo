@@ -1,59 +1,75 @@
-# Halo
+# Halo - Your Invisible Guardian Angel
 
-Your Invisible Guardian Angel
+Halo is a privacy focused mobile application designed to protect users from verbal threats, scams, and social engineering attacks in real time. It operates as a background service with a non intrusive overlay, continuously analyzing conversation patterns to detect danger without compromising user privacy.
 
-Halo is a mobile application built with React Native and Expo that uses locally hosted OLLAMA-based Llama models to protect users from scams, threats, and dangers in real time.
+## How It Protects You
 
-## Features
+Halo uses an advanced on device AI model to listen to and analyze conversations. When a threat is detected, such as a scammer asking for OTPs or financial details, Halo provides immediate feedback through haptic vibrations and a visual warning on the overlay. The application is designed to be:
 
-- Real-time threat analysis powered by Llama3 running locally via OLLAMA
-- Voice input for hands-free threat detection
-- Voice alerts when dangers are detected
-- Chat interface for conversational interaction with the guardian AI
-- Haptic feedback for danger alerts
-- RunAnywhere SDK integration with LlamaCPP backend
-- Angelic, minimal UI with animated status indicators
+*   **Private**: All voice processing and threat analysis happen locally on your device using a local Large Language Model (LLM). No audio data leaves your phone.
+*   **Proactive**: It warns you during the conversation, allowing you to disengage before harm occurs.
+*   **Intelligent**: It distinguishes between safe, casual conversations and dangerous patterns like financial fraud, identity theft, and coercion.
 
-## Architecture
+## Technology Stack
 
-The app uses a "Neuro-Reflex" pattern:
-- The Reflex Layer analyzes input for immediate danger using low-temperature inference
-- The Chat Layer provides conversational responses using the same local Llama3 model
-- Voice alerts trigger automatically when threats are detected above 70% confidence
+The application is built using modern mobile and AI technologies to ensure performance and privacy:
 
-## Tech Stack
+*   **Frontend**: React Native with Expo (Managed Workflow)
+*   **Architecture**: React Native New Architecture (Fabric) for high performance UI execution
+*   **AI Engine**: Local LLM inference using OLLAMA and TinyLlama, bridged via custom native modules
+*   **AI Integration**: @runanywhere/core, @runanywhere/llamacpp
+*   **Native Modules**: Custom Kotlin implementation for Android System Overlay using Expo Modules API
+*   **Voice Processing**: On device speech recognition and Text to Speech integration
+*   **State Management**: React Hooks and Context API for real time danger state propagation
 
-- React Native + Expo (Development Build)
-- TypeScript
-- RunAnywhere SDK (@runanywhere/core, @runanywhere/llamacpp)
-- OLLAMA (local LLM server)
-- Llama3 (language model)
-- expo-speech (text-to-speech)
-- @react-native-voice/voice (speech-to-text)
-- expo-haptics (vibration feedback)
-- expo-sensors (motion detection)
+## Running the Application
 
-## Prerequisites
+To run Halo locally, you need an Android device or emulator and a running OLLAMA instance.
 
-- Node.js 18+
-- Android SDK with NDK 27.1
-- OLLAMA installed with llama3 model pulled
-- Physical Android device with USB debugging enabled
+### Prerequisites
 
-## Setup
+1.  Node.js and npm installed
+2.  Android Studio with SDK and Emulator configured
+3.  OLLAMA installed and running
+4.  Git
 
-1. Clone the repository
-2. Install dependencies: `npm install`
-3. Start OLLAMA: `ollama serve`
-4. Pull the model if needed: `ollama pull llama3`
-5. Connect your Android device via USB
-6. Set up port forwarding: `adb reverse tcp:11434 tcp:11434`
-7. Build and run: `npx expo run:android`
+### Installation
 
-## How It Works
+1.  Clone the repository
+    ```bash
+    git clone https://github.com/bitWise72/Halo.git
+    cd Halo
+    ```
 
-The app connects to OLLAMA running on your development machine through ADB port forwarding. When you type or speak text, it sends the input to Llama3 for analysis. If the model detects a scam or threat with confidence above 70%, the app triggers haptic feedback and a voice alert to warn the user.
+2.  Install dependencies
+    ```bash
+    npm install
+    ```
+
+3.  Prepare the AI Model
+    Ensure OLLAMA is running and the model is available:
+    ```bash
+    ollama pull tinyllama
+    ```
+
+4.  Connect Device to Localhost
+    For Android Emulator to access OLLAMA on your host machine:
+    ```bash
+    adb reverse tcp:11434 tcp:11434
+    ```
+
+5.  Build and Run
+    ```bash
+    npx expo run:android
+    ```
+
+## Usage
+
+1.  Launch the app and grant the necessary permissions (Microphone and Overlay).
+2.  Tap the Shield icon to activate the Guardian mode.
+3.  Enable the Overlay to have the floating icon persist over other apps.
+4.  The icon will glow green when safe and turn red with a warning vibration when a threat is detected.
 
 ## License
 
-MIT
+MIT License
