@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, TextInput } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, TextInput, ScrollView } from 'react-native';
 import { NeuroReflex } from './src/services/NeuroReflex';
 
 export default function App() {
@@ -7,6 +7,7 @@ export default function App() {
   const [status, setStatus] = useState('Initializing Nervous System...');
   const [isDanger, setIsDanger] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     init();
@@ -15,20 +16,21 @@ export default function App() {
   const init = async () => {
     const sdkInit = await NeuroReflex.initialize();
     if (sdkInit) {
-      setStatus('Downloading Reflex Model...');
+      setStatus('Connecting to OLLAMA...');
       const modelLoaded = await NeuroReflex.loadReflexModel();
       if (modelLoaded) {
         setReady(true);
-        setStatus('Guardian Active (Spinal Cord Online)');
+        setStatus('Guardian Active :: OLLAMA Connected');
       } else {
-        setStatus('Error: Model Load Failed');
+        setStatus('Error: Cannot connect to OLLAMA. Run adb reverse tcp:11434 tcp:11434');
       }
     }
   };
 
   const handleAnalyze = async () => {
-    if (!ready || !inputText.trim()) return;
-    setStatus('Analyzing Signal...');
+    if (!ready || !inputText.trim() || loading) return;
+    setLoading(true);
+    setStatus('Analyzing Signal via Llama3...');
 
     const result = await NeuroReflex.processSignal(inputText);
 
@@ -36,47 +38,75 @@ export default function App() {
       setIsDanger(true);
       setStatus('THREAT BLOCKED: ' + result.reasoning);
     } else {
-      setStatus('Safe: ' + result.reasoning);
       setIsDanger(false);
+      setStatus('Safe: ' + result.reasoning);
     }
+    setLoading(false);
+  };
+
+  const handleReset = () => {
+    setIsDanger(false);
+    setInputText('');
+    setStatus('Guardian Active :: OLLAMA Connected');
   };
 
   return (
-    <View style={[styles.container, isDanger && styles.dangerZone]}>
-      <Text style={styles.header}>ProjectHalo</Text>
+    <ScrollView contentContainerStyle={[styles.container, isDanger && styles.dangerZone]}>
+      <Text style={[styles.header, isDanger && styles.headerDanger]}>ProjectHalo</Text>
+      <Text style={styles.subtitle}>Neuro-Reflex Guardian</Text>
 
       <View style={styles.card}>
-        <Text style={styles.status}>{status}</Text>
-        {!ready && <ActivityIndicator size="large" color="#007AFF" />}
+        <View style={[styles.statusDot, ready ? styles.dotGreen : styles.dotRed]} />
+        <Text style={[styles.status, isDanger && styles.statusDanger]}>{status}</Text>
+        {(!ready || loading) && <ActivityIndicator size="large" color={isDanger ? '#FFFFFF' : '#007AFF'} />}
       </View>
 
       <TextInput
         style={styles.input}
-        placeholder="Enter text to analyze..."
+        placeholder="Enter text to analyze for threats..."
+        placeholderTextColor="#999"
         value={inputText}
         onChangeText={setInputText}
         multiline
+        editable={!loading}
       />
 
       <TouchableOpacity
-        style={[styles.button, (!ready || !inputText) && styles.disabled]}
+        style={[styles.button, (!ready || !inputText.trim() || loading) && styles.disabled]}
         onPress={handleAnalyze}
-        disabled={!ready || !inputText}
+        disabled={!ready || !inputText.trim() || loading}
       >
-        <Text style={styles.btnText}>Analyze Text</Text>
+        <Text style={styles.btnText}>{loading ? 'Analyzing...' : 'Analyze Text'}</Text>
       </TouchableOpacity>
-    </View>
+
+      {isDanger && (
+        <TouchableOpacity style={styles.resetButton} onPress={handleReset}>
+          <Text style={styles.resetText}>Clear Alert</Text>
+        </TouchableOpacity>
+      )}
+
+      <Text style={styles.footer}>Powered by OLLAMA + Llama3 (Local)</Text>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F7', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  container: { flexGrow: 1, backgroundColor: '#F5F5F7', alignItems: 'center', justifyContent: 'center', padding: 24 },
   dangerZone: { backgroundColor: '#FF3B30' },
-  header: { fontSize: 34, fontWeight: '800', marginBottom: 40, color: '#1D1D1F' },
-  card: { backgroundColor: 'white', padding: 20, borderRadius: 16, marginBottom: 30, width: '100%', alignItems: 'center', shadowOpacity: 0.1, shadowRadius: 10 },
-  status: { fontSize: 16, color: '#86868B', textAlign: 'center', marginBottom: 10 },
-  input: { width: '100%', backgroundColor: 'white', padding: 15, borderRadius: 10, marginBottom: 20, minHeight: 100, textAlignVertical: 'top' },
-  button: { backgroundColor: '#007AFF', paddingVertical: 16, paddingHorizontal: 32, borderRadius: 30, width: '100%', alignItems: 'center' },
-  disabled: { opacity: 0.5 },
-  btnText: { color: 'white', fontSize: 16, fontWeight: '600' }
+  header: { fontSize: 36, fontWeight: '800', color: '#1D1D1F', marginTop: 60 },
+  headerDanger: { color: '#FFFFFF' },
+  subtitle: { fontSize: 14, color: '#86868B', marginBottom: 30, letterSpacing: 1.5, textTransform: 'uppercase' },
+  card: { backgroundColor: 'rgba(255,255,255,0.95)', padding: 24, borderRadius: 20, marginBottom: 24, width: '100%', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 16, elevation: 4 },
+  statusDot: { width: 10, height: 10, borderRadius: 5, marginBottom: 12 },
+  dotGreen: { backgroundColor: '#34C759' },
+  dotRed: { backgroundColor: '#FF3B30' },
+  status: { fontSize: 15, color: '#555', textAlign: 'center', marginBottom: 12, lineHeight: 22 },
+  statusDanger: { color: '#1D1D1F', fontWeight: '600' },
+  input: { width: '100%', backgroundColor: 'white', padding: 16, borderRadius: 14, marginBottom: 16, minHeight: 120, textAlignVertical: 'top', fontSize: 15, color: '#1D1D1F', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  button: { backgroundColor: '#007AFF', paddingVertical: 18, paddingHorizontal: 32, borderRadius: 30, width: '100%', alignItems: 'center', shadowColor: '#007AFF', shadowOpacity: 0.3, shadowRadius: 8, elevation: 3 },
+  disabled: { opacity: 0.4 },
+  btnText: { color: 'white', fontSize: 17, fontWeight: '700' },
+  resetButton: { marginTop: 16, paddingVertical: 14, paddingHorizontal: 32, borderRadius: 30, borderWidth: 2, borderColor: '#FFFFFF', width: '100%', alignItems: 'center' },
+  resetText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
+  footer: { marginTop: 32, fontSize: 12, color: '#AAAAAA', marginBottom: 40 }
 });
