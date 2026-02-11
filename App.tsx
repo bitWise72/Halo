@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, TextInput } from 'react-native';
 import { NeuroReflex } from './src/services/NeuroReflex';
 
 export default function App() {
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState('Initializing Nervous System...');
   const [isDanger, setIsDanger] = useState(false);
+  const [inputText, setInputText] = useState('');
 
   useEffect(() => {
     init();
@@ -25,19 +26,18 @@ export default function App() {
     }
   };
 
-  const simulateAttack = async () => {
-    if (!ready) return;
+  const handleAnalyze = async () => {
+    if (!ready || !inputText.trim()) return;
     setStatus('Analyzing Signal...');
 
-    const result = await NeuroReflex.processSignal(
-      "Grandma, this is the police. We need gift cards immediately or you go to jail."
-    );
+    const result = await NeuroReflex.processSignal(inputText);
 
     if (result.status === 'INTERVENTION') {
       setIsDanger(true);
-      setStatus('THREAT BLOCKED');
+      setStatus('THREAT BLOCKED: ' + result.reasoning);
     } else {
-      setStatus('Safe.');
+      setStatus('Safe: ' + result.reasoning);
+      setIsDanger(false);
     }
   };
 
@@ -50,24 +50,33 @@ export default function App() {
         {!ready && <ActivityIndicator size="large" color="#007AFF" />}
       </View>
 
+      <TextInput
+        style={styles.input}
+        placeholder="Enter text to analyze..."
+        value={inputText}
+        onChangeText={setInputText}
+        multiline
+      />
+
       <TouchableOpacity
-        style={[styles.button, !ready && styles.disabled]}
-        onPress={simulateAttack}
-        disabled={!ready}
+        style={[styles.button, (!ready || !inputText) && styles.disabled]}
+        onPress={handleAnalyze}
+        disabled={!ready || !inputText}
       >
-        <Text style={styles.btnText}>Simulate Attack</Text>
+        <Text style={styles.btnText}>Analyze Text</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F7', alignItems: 'center', justifyContent: 'center' },
+  container: { flex: 1, backgroundColor: '#F5F5F7', alignItems: 'center', justifyContent: 'center', padding: 20 },
   dangerZone: { backgroundColor: '#FF3B30' },
   header: { fontSize: 34, fontWeight: '800', marginBottom: 40, color: '#1D1D1F' },
-  card: { backgroundColor: 'white', padding: 20, borderRadius: 16, marginBottom: 30, width: '80%', alignItems: 'center', shadowOpacity: 0.1, shadowRadius: 10 },
+  card: { backgroundColor: 'white', padding: 20, borderRadius: 16, marginBottom: 30, width: '100%', alignItems: 'center', shadowOpacity: 0.1, shadowRadius: 10 },
   status: { fontSize: 16, color: '#86868B', textAlign: 'center', marginBottom: 10 },
-  button: { backgroundColor: '#007AFF', paddingVertical: 16, paddingHorizontal: 32, borderRadius: 30 },
+  input: { width: '100%', backgroundColor: 'white', padding: 15, borderRadius: 10, marginBottom: 20, minHeight: 100, textAlignVertical: 'top' },
+  button: { backgroundColor: '#007AFF', paddingVertical: 16, paddingHorizontal: 32, borderRadius: 30, width: '100%', alignItems: 'center' },
   disabled: { opacity: 0.5 },
   btnText: { color: 'white', fontSize: 16, fontWeight: '600' }
 });
